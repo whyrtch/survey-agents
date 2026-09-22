@@ -1,0 +1,5 @@
+# Subproject repos (masing-masing punya git sendiri)
+surveyku-backend/
+surveyku-web/
+surveyor-app/
+surveyku-minio/
