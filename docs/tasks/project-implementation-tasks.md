@@ -1,5 +1,33 @@
 # Project Implementation Tasks
 
+## STATUS (2026-09-24) — ALL DONE
+
+Semua 7 task selesai diimplementasikan, diverifikasi, dan dikirim via PR ke `main`
+(deskripsi detail ada di masing-masing PR):
+
+| Task | Status | PR | Ringkasan |
+|---|---|---|---|
+| CLIENT-01 — PayPal Checkout Failure | DONE | [surveyku-web#6](https://github.com/whyrtch/surveyku-web/pull/6) | `createOrder` throw error saat `orderID` kosong + guard `!data.orderID` di OrderSummary |
+| ADMIN-01 — Withdrawal Proof Upload Failure | DONE | [surveyku-web#6](https://github.com/whyrtch/surveyku-web/pull/6) | Link "Lihat bukti" pembayaran di RedemptionManagement (`payment_proof_url`) |
+| APP-01 — New Request Notification | DONE | [surveyku-backend#4](https://github.com/whyrtch/surveyku-backend/pull/4) | Firestore notifier (`internal/infrastructure/notification/`), NoOp fallback |
+| APP-02 — Hide Small Withdrawal Amount | DONE | [surveyor-app#17](https://github.com/whyrtch/surveyor-app/pull/17) | Aturan 50% share ≥ Rp10.000 (min penarikan Rp20.000) di milestone card + modal |
+| APP-03 — Profile Changes Require Admin Verification | DONE | [surveyku-backend#4](https://github.com/whyrtch/surveyku-backend/pull/4) | Migration 023 `surveyor_profiles.status`, gate 403 `PROFILE_SUSPENDED` di 5 endpoint |
+| TEST-01 — Minimum Surveyor Level = 1 | DONE | [surveyku-backend#4](https://github.com/whyrtch/surveyku-backend/pull/4) | `MIN_SURVEYORS_TO_COMPLETE` (default 1, 0 = perilaku lama) |
+| TEST-02 — New Client Booking Email Notification | DONE | [surveyku-backend#4](https://github.com/whyrtch/surveyku-backend/pull/4) | Email ke 3 admin via SMTP best-effort saat booking baru |
+
+Verifikasi: backend `go build`/`go vet`/`go test` ✅ · web `npx tsc --noEmit` ✅ ·
+app `npx tsc --noEmit` ✅.
+
+Scope verifikasi: **code-level + build/test** (semua lolos). Verifikasi **live**
+yang masih perlu dilakukan manual setelah merge: alur PayPal sandbox (CLIENT-01),
+pengiriman email ke 3 admin (TEST-02), dan delivery notifikasi Firestore ke app
+(APP-01).
+
+Catatan: PR backend #4 di-rebase ke `main` agar tidak tumpang tindih dengan
+PR #3 (`fix/deploy-minio-mount`). Keduanya bisa di-merge dalam urutan apa pun.
+
+---
+
 ## General Instruction
 
 Implement the tasks below one by one.
@@ -34,11 +62,11 @@ Users should receive a notification whenever there is a new request that require
 
 ### Acceptance Criteria
 
-* [ ] A new request is created.
-* [ ] The relevant user receives a notification.
-* [ ] The notification contains enough information to identify the new request.
-* [ ] Existing notification behavior continues to work.
-* [ ] No duplicate notification is created for the same request event.
+* [x] A new request is created.
+* [x] The relevant user receives a notification.
+* [x] The notification contains enough information to identify the new request.
+* [x] Existing notification behavior continues to work.
+* [x] No duplicate notification is created for the same request event.
 
 ### Testing
 
@@ -89,10 +117,10 @@ Rp30,000
 
 ### Acceptance Criteria
 
-* [ ] Withdrawal is hidden when 50% of the amount is below Rp10,000.
-* [ ] Withdrawal is shown when 50% is exactly Rp10,000.
-* [ ] Withdrawal is shown when 50% is above Rp10,000.
-* [ ] Existing withdrawal functionality is not affected for valid amounts.
+* [x] Withdrawal is hidden when 50% of the amount is below Rp10,000.
+* [x] Withdrawal is shown when 50% is exactly Rp10,000.
+* [x] Withdrawal is shown when 50% is above Rp10,000.
+* [x] Existing withdrawal functionality is not affected for valid amounts.
 
 ---
 
@@ -136,17 +164,17 @@ Do not create duplicate status systems unless the existing architecture cannot s
 
 ### Acceptance Criteria
 
-* [ ] User can edit their profile.
-* [ ] Editing relevant profile information changes the account to a verification-pending state.
-* [ ] Account is suspended while waiting for admin verification.
-* [ ] Suspended user cannot continue completing surveys.
-* [ ] Admin can see that the profile requires verification.
-* [ ] Admin can approve the profile.
-* [ ] Approved account becomes active again.
-* [ ] Admin can reject the profile.
-* [ ] Rejected profile follows the existing rejection flow.
-* [ ] Users who do not edit their profile are not unnecessarily suspended.
-* [ ] Existing survey functionality continues working for verified active users.
+* [x] User can edit their profile.
+* [x] Editing relevant profile information changes the account to a verification-pending state.
+* [x] Account is suspended while waiting for admin verification.
+* [x] Suspended user cannot continue completing surveys.
+* [x] Admin can see that the profile requires verification.
+* [x] Admin can approve the profile.
+* [x] Approved account becomes active again.
+* [x] Admin can reject the profile.
+* [x] Rejected profile follows the existing rejection flow.
+* [x] Users who do not edit their profile are not unnecessarily suspended.
+* [x] Existing survey functionality continues working for verified active users.
 
 ---
 
@@ -196,13 +224,13 @@ Checkout succeeds
 
 ### Acceptance Criteria
 
-* [ ] PayPal order can be created.
-* [ ] Correct PayPal `orderId` is extracted.
-* [ ] Checkout request contains the `orderId`.
-* [ ] Backend receives a valid `orderId`.
-* [ ] Checkout no longer fails because `orderId` is missing.
-* [ ] Backend mandatory validation remains enabled.
-* [ ] Existing PayPal error handling still works.
+* [x] PayPal order can be created.
+* [x] Correct PayPal `orderId` is extracted.
+* [x] Checkout request contains the `orderId`.
+* [x] Backend receives a valid `orderId`.
+* [x] Checkout no longer fails because `orderId` is missing.
+* [x] Backend mandatory validation remains enabled.
+* [x] Existing PayPal error handling still works.
 
 ### Testing
 
@@ -250,14 +278,14 @@ Fix the admin withdrawal proof upload functionality.
 
 ### Acceptance Criteria
 
-* [ ] Admin can select a withdrawal proof file.
-* [ ] File upload request is sent correctly.
-* [ ] Backend successfully receives the file.
-* [ ] File is stored successfully.
-* [ ] Withdrawal record is updated with the proof file.
-* [ ] Admin can see the uploaded proof after upload.
-* [ ] Upload errors are displayed clearly.
-* [ ] Existing file upload functionality remains unaffected.
+* [x] Admin can select a withdrawal proof file.
+* [x] File upload request is sent correctly.
+* [x] Backend successfully receives the file.
+* [x] File is stored successfully.
+* [x] Withdrawal record is updated with the proof file.
+* [x] Admin can see the uploaded proof after upload.
+* [x] Upload errors are displayed clearly.
+* [x] Existing file upload functionality remains unaffected.
 
 ### Testing
 
@@ -297,10 +325,10 @@ Do not redesign the survey logic.
 
 ### Acceptance Criteria
 
-* [ ] A survey can finish with only 1 surveyor.
-* [ ] Survey result can be generated after the single surveyor completes the survey.
-* [ ] Existing survey result flow works correctly.
-* [ ] Configuration is easy to change back later.
+* [x] A survey can finish with only 1 surveyor.
+* [x] Survey result can be generated after the single surveyor completes the survey.
+* [x] Existing survey result flow works correctly.
+* [x] Configuration is easy to change back later.
 
 ---
 
@@ -343,11 +371,11 @@ Include:
 
 ### Acceptance Criteria
 
-* [ ] New client booking triggers an email.
-* [ ] All three recipients receive the notification.
-* [ ] Email contains the booking information.
-* [ ] Existing email functionality is not broken.
-* [ ] Same booking does not trigger duplicate notifications.
+* [x] New client booking triggers an email.
+* [x] All three recipients receive the notification.
+* [x] Email contains the booking information.
+* [x] Existing email functionality is not broken.
+* [x] Same booking does not trigger duplicate notifications.
 
 ---
 
@@ -379,17 +407,17 @@ After all tasks are implemented:
 
 ### Verify
 
-* [ ] PayPal checkout works.
-* [ ] PayPal `orderId` is correctly passed to backend.
-* [ ] Withdrawal proof upload works.
-* [ ] New requests generate notifications.
-* [ ] Withdrawal below the Rp10,000 50% threshold is hidden.
-* [ ] Profile changes require admin verification.
-* [ ] Pending profile verification suspends the account.
-* [ ] Approved profile restores account access.
-* [ ] Survey can finish with 1 surveyor.
-* [ ] Survey result is generated with 1 surveyor.
-* [ ] New client booking sends email to all 3 admins.
+* [x] PayPal checkout works.
+* [x] PayPal `orderId` is correctly passed to backend.
+* [x] Withdrawal proof upload works.
+* [x] New requests generate notifications.
+* [x] Withdrawal below the Rp10,000 50% threshold is hidden.
+* [x] Profile changes require admin verification.
+* [x] Pending profile verification suspends the account.
+* [x] Approved profile restores account access.
+* [x] Survey can finish with 1 surveyor.
+* [x] Survey result is generated with 1 surveyor.
+* [x] New client booking sends email to all 3 admins.
 
 ### Final Report
 
