@@ -13,7 +13,12 @@
 set -euo pipefail
 
 PROJECT_DIR="/home/whyrtch/Project"
+REPO_DIR="$PROJECT_DIR/Survey"
 BACKEND_DIR="$PROJECT_DIR/Survey/surveyku-backend"
+# Sumber tunggal script ini. Jalur operasional /home/whyrtch/surveyku-server.sh
+# harus symlink ke file ini — lihat verify_script_source().
+SCRIPT_REPO="$REPO_DIR/surveyku-server.sh"
+SCRIPT_RUNTIME="/home/whyrtch/surveyku-server.sh"
 CREDENTIALS_DIR="$BACKEND_DIR/credentials"
 WEB_DIR="$PROJECT_DIR/Survey/surveyku-web"
 WEB_PID_FILE="$WEB_DIR/.web.pid"
@@ -55,6 +60,25 @@ check_docker() {
 
 container_running() {
 	docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^$1$"
+}
+
+# Dua salinan script pernah melenceng tanpa terdeteksi: perubahan di repo
+# di-commit, tapi jalur operasional /home/whyrtch/surveyku-server.sh tetap
+# versi lama — sehingga tidak ada yang benar-benar ter-deploy. Sekarang
+# jalurnya symlink, jadi mustahil berbeda. Fungsi ini menangkap kemungkinan
+# symlink diganti kembali menjadi salinan.
+#
+# Hanya memberi peringatan, tidak memperbaiki sendiri: script bash membaca
+# file-nya secara bertahap per byte offset, jadi menimpa file yang sedang
+# dijalankan bisa membuat shell mengeksekusi isi sampah.
+verify_script_source() {
+	[ -e "$SCRIPT_RUNTIME" ] || return 0
+	[ -L "$SCRIPT_RUNTIME" ] && return 0
+	err "PERINGATAN: $SCRIPT_RUNTIME bukan symlink ke repo."
+	echo "    Perubahan surveyku-server.sh di repo tidak akan sampai ke"
+	echo "    script yang dijalankan. Perbaiki:"
+	echo "      ln -sfn $SCRIPT_REPO $SCRIPT_RUNTIME"
+	return 0
 }
 
 container_exists() {
@@ -539,6 +563,7 @@ do_start() {
 	log "🚀 Memulai SurveyKu Server..."
 	echo ""
 
+	verify_script_source
 	check_docker
 	ok "Docker daemon aktif"
 
@@ -633,6 +658,8 @@ do_stop() {
 do_status() {
 	echo "===== SurveyKu Server Status ====="
 	echo ""
+
+	verify_script_source
 
 	log "Docker daemon"
 	if timeout 5 docker info &>/dev/null 2>&1; then

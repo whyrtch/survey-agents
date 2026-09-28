@@ -435,6 +435,17 @@ Script utama: **`/home/whyrtch/surveyku-server.sh`**
 ./surveyku-server.sh {start|stop|restart|status|fix-loops|setup-smtp|setup-paypal}
 ```
 
+> **Jalur itu adalah symlink** ke `Survey/surveyku-server.sh` di dalam repo.
+> Sumber tunggalnya ada di repo — edit di sana, jangan pernah menyalin
+> script ke jalur di atas, karena perubahan tidak akan sampai ke script yang
+> dijalankan. Kalau symlink diganti salinan, `start` dan `status` akan
+> memberi peringatan.
+>
+> Kalau symlink rusak:
+> ```bash
+> ln -sfn /home/whyrtch/Project/Survey/surveyku-server.sh /home/whyrtch/surveyku-server.sh
+> ```
+
 ### Komponen & Port
 
 | Komponen | Jenis | Nama | Port |

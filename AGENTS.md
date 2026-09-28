@@ -72,6 +72,11 @@ mobile, dapat reward), **admin** (back-office: verifikasi, audit, payout).
 /home/whyrtch/surveyku-server.sh {start|stop|restart|status|fix-loops|setup-smtp|setup-paypal}
 ```
 
+> Jalur di atas **symlink** ke `Survey/surveyku-server.sh`. Edit script di
+> dalam repo, jangan pernah menyalin/menimpa jalur tersebut — perubahan
+> tidak akan sampai ke script yang dijalankan. Kalau perlu memulihkan:
+> `ln -sfn /home/whyrtch/Project/Survey/surveyku-server.sh /home/whyrtch/surveyku-server.sh`
+
 - `start` — nyalakan semua service (PostgreSQL → Redis → MinIO → Backend → Web → Tunnel) + verifikasi endpoint
 - `stop` — matikan Web, Backend, MinIO, Redis (PostgreSQL & Tunnel dibiarkan jalan)
 - `restart` — stop lalu start
