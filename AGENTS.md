@@ -126,6 +126,37 @@ tail -f web.log                            # cek log
 | Order COMPLETED tanpa file hasil | Admin klik "Generate Hasil Akhir" (self-heal) |
 | Endpoint baru tidak ada | Image stale → rebuild dari commit final + restart |
 | Cloudflared restart loop | `sudo ./surveyku-server.sh fix-loops` |
+| `surveyku-server.sh` 0 byte / kosong | `git restore surveyku-server.sh` (symlink runtime ikut rusak) |
+| Perubahan script tidak Berlaku | Jalankan lewat `/home/whyrtch/surveyku-server.sh` (symlink), bukan `./surveyku-server.sh` dari repo lain |
+
+### ⚠️ Merge PR: JANGAN pakai `--delete-branch`
+
+```bash
+# ❌ JANGAN — bisa memotong surveyku-server.sh jadi 0 byte
+gh pr merge N --squash --delete-branch
+
+# ✅ BENAR — merge dulu, hapus branch manual setelahnya
+gh pr merge N --squash
+git fetch origin && git branch -dr origin/N   # hapus branch remote
+git branch -d N 2>/dev/null || git branch -D N
+git checkout main && git pull --ff-only origin main
+```
+
+**Kenapa:** karena `surveyku-server.sh` di dalam repo adalah target symlink
+yang dipakai operasional, setiap operasi git yang menyentuh file itu ikut
+menggerakkan script server. Squash-merge membuat branch lokal diverge dari
+`main`, dan `gh pr merge --delete-branch` menjalankan operasi checkout
+dalam kondisi itu. Pada 2026-09-28 hasilnya `Text file busy` dan file
+script terpotong jadi 0 byte — symlink runtime ikut mati.
+
+Kalau file sudah telanjur terpotong:
+
+```bash
+git restore surveyku-server.sh   # isinya ada di HEAD / origin/main
+```
+
+Pastikan `git status` bersih **sebelum** merge berikutnya, dan pakai
+`git pull --ff-only` supaya divergence tidak muncul diam-diam.
 
 ## 7. Jika bingung
 
