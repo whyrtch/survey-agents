@@ -349,7 +349,7 @@ apply_backend_env() {
 	while IFS= read -r line; do
 		[ -z "$line" ] && continue
 		case "$line" in
-			SMTP_*|VERIFY_URL=*|PAYPAL_*|MINIO_*) continue ;;
+			SMTP_*|VERIFY_URL=*|ADMIN_NOTIFY_EMAILS=*|ADMIN_URL=*|MIN_SURVEYORS_TO_COMPLETE=*|PAYPAL_*|MINIO_*) continue ;;
 		esac
 		env_args+=(-e "$line")
 	done < <(docker inspect "$BACKEND_CONTAINER" --format '{{range .Config.Env}}{{println .}}{{end}}' 2>/dev/null)
@@ -377,6 +377,12 @@ apply_backend_env() {
 		-e "MINIO_ACCESS_KEY=$(read_backend_env_value MINIO_ACCESS_KEY)"
 		-e "MINIO_SECRET_KEY=$(read_backend_env_value MINIO_SECRET_KEY)"
 		-e "MINIO_BUCKET=$(read_backend_env_value MINIO_BUCKET)"
+		# Nilai default ini harus sama dengan default internal/config/config.go.
+		# Kalau tidak, backend memakai default localhost yang tidak bisa dibuka
+		# penerima email.
+		-e "ADMIN_NOTIFY_EMAILS=${ADMIN_NOTIFY_EMAILS:-andikabayu26@gmail.com,mrs.rifkiramadhan@gmail.com,ama.equinox@gmail.com}"
+		-e "ADMIN_URL=${ADMIN_URL:-https://admin-survey.whyrtch.online/admin/orders}"
+		-e "MIN_SURVEYORS_TO_COMPLETE=${MIN_SURVEYORS_TO_COMPLETE:-1}"
 		# Hanya credential path. FIREBASE_BUCKET sengaja TIDAK diteruskan:
 		# main.go memilih Firebase Storage bila Bucket terisi, dan itu akan
 		# memindahkan storage dari MinIO (lokasi data KTP/questionnaire/result)
