@@ -14,6 +14,7 @@ set -euo pipefail
 
 PROJECT_DIR="/home/whyrtch/Project"
 BACKEND_DIR="$PROJECT_DIR/Survey/surveyku-backend"
+CREDENTIALS_DIR="$BACKEND_DIR/credentials"
 WEB_DIR="$PROJECT_DIR/Survey/surveyku-web"
 WEB_PID_FILE="$WEB_DIR/.web.pid"
 WEB_LOG="$WEB_DIR/web.log"
@@ -113,6 +114,66 @@ ensure_backend_storage() {
 			err "Gagal restart backend"
 			return 1
 		}
+	fi
+}
+
+# Env, mount, dan image container hanya bisa berubah saat container dibuat
+# ulang, jadi `docker start` mempertahankan ketiganya. Deteksi drift supaya
+# start bisa recreate sendiri (pola self-heal yang sama seperti NoOp storage).
+# Tanpa ini notifikasi Firestore, credential MinIO, dan image baru yang sudah
+# di-build tidak akan pernah benar-benar dipakai.
+backend_needs_recreate() {
+	container_running "$BACKEND_CONTAINER" || return 1
+
+	# Image tag latest bisa lebih baru dari image yang sedang dipakai container.
+	# `docker start` tetap memakai image lama, jadi kode baru tidak akan aktif
+	# walau `docker build` sudah dijalankan.
+	local running_image current_image
+	running_image=$(docker inspect "$BACKEND_CONTAINER" --format '{{.Image}}' 2>/dev/null || true)
+	current_image=$(docker image inspect "$BACKEND_IMAGE" --format '{{.Id}}' 2>/dev/null || true)
+	if [ -n "$current_image" ] && [ "$running_image" != "$current_image" ]; then
+		return 0
+	fi
+
+	local creds_path
+	creds_path=$(read_backend_env_value FIREBASE_CREDENTIALS_PATH)
+	if [ -n "$creds_path" ]; then
+		local destinations
+		destinations=$(docker inspect "$BACKEND_CONTAINER" --format '{{range .Mounts}}{{.Destination}} {{end}}' 2>/dev/null || true)
+		case " $destinations " in
+			*" /app/credentials "*) ;;
+			*) return 0 ;;
+		esac
+
+		local in_container
+		in_container=$(docker exec "$BACKEND_CONTAINER" printenv FIREBASE_CREDENTIALS_PATH 2>/dev/null || true)
+		[ "$in_container" = "$creds_path" ] || return 0
+
+		# Bucket harus kosong supaya storage tetap MinIO, bukan Firebase Storage.
+		local bucket
+		bucket=$(docker exec "$BACKEND_CONTAINER" printenv FIREBASE_BUCKET 2>/dev/null || true)
+		[ -z "$bucket" ] || return 0
+	fi
+
+	# Kredensial MinIO harus ikut berubah kalau .env sudah dirotasi. Kalau
+	# tidak, backend tetap menandatangani request dengan key lama dan semua
+	# upload gagal dengan SignatureDoesNotMatch.
+	local expected_actual
+	for key in MINIO_ACCESS_KEY MINIO_SECRET_KEY; do
+		expected_actual=$(read_backend_env_value "$key")
+		[ -n "$expected_actual" ] || continue
+		[ "$(docker exec "$BACKEND_CONTAINER" printenv "$key" 2>/dev/null || true)" = "$expected_actual" ] || return 0
+	done
+
+	return 1
+}
+
+ensure_backend_config() {
+	container_running "$BACKEND_CONTAINER" || return 0
+	container_exists "$BACKEND_CONTAINER" || return 0
+	if backend_needs_recreate; then
+		echo "  Image/env/mount backend tidak sinkron, recreate container..."
+		apply_backend_env || return 1
 	fi
 }
 
@@ -238,6 +299,15 @@ load_backend_env() {
 	fi
 }
 
+# Baca satu key dari surveyku-backend/.env tanpa mengexport seluruh isinya.
+# Dipakai untuk FIREBASE_* (path-nya relatif ke WORKDIR container /app) dan
+# credential MinIO, yang tidak boleh ikut ter-*export* ke environment script.
+read_backend_env_value() {
+	local key="$1"
+	[ -f "$BACKEND_DIR/.env" ] || return 0
+	sed -n "s/^${key}=//p" "$BACKEND_DIR/.env" | tail -n 1
+}
+
 # Recreate backend container dengan env SMTP (dari .smtp.env) dan PayPal (dari .backend.env).
 # Env lain (DB, Redis, JWT, dll) diambil dari container yang sedang berjalan.
 apply_backend_env() {
@@ -251,6 +321,18 @@ apply_backend_env() {
 	network=$(docker inspect "$BACKEND_CONTAINER" --format '{{.HostConfig.NetworkMode}}' 2>/dev/null)
 	restart_policy=$(docker inspect "$BACKEND_CONTAINER" --format '{{.HostConfig.RestartPolicy.Name}}' 2>/dev/null)
 	[ -z "$restart_policy" ] && restart_policy="unless-stopped"
+
+	# Credential Firebase Admin SDK. Path di .env relatif ke WORKDIR container
+	# (/app), jadi host $CREDENTIALS_DIR di-mount ke /app/credentials:ro.
+	# Kalau kosong/tidak ada, backend jatuh ke NoOpNotifier dan notifikasi
+	# survei ke app tidak pernah terkirim.
+	local firebase_creds mount_args=()
+	firebase_creds=$(read_backend_env_value FIREBASE_CREDENTIALS_PATH)
+	if [ -n "$firebase_creds" ] && [ -d "$CREDENTIALS_DIR" ]; then
+		mount_args+=(-v "$CREDENTIALS_DIR:/app/credentials:ro")
+	elif [ -n "$firebase_creds" ]; then
+		err "FIREBASE_CREDENTIALS_PATH diset tapi $CREDENTIALS_DIR tidak ada — notifikasi Firestore nonaktif"
+	fi
 
 	# Kumpulkan env lama (kecuali SMTP_* / VERIFY_URL / PAYPAL_* / MINIO_*) + env baru
 	local env_args=()
@@ -279,6 +361,18 @@ apply_backend_env() {
 		-e "PAYPAL_CANCEL_URL=${PAYPAL_CANCEL_URL:-}"
 		-e "MINIO_ENDPOINT=${MINIO_ENDPOINT:-localhost:9000}"
 		-e "MINIO_PUBLIC_URL=${MINIO_PUBLIC_URL:-}"
+		# Access/secret key wajib dikirim eksplisit. config.go tidak punya
+		# credential default lagi, jadi env kosong berarti storage init
+		# dilewati dan semua upload file mati.
+		-e "MINIO_ACCESS_KEY=$(read_backend_env_value MINIO_ACCESS_KEY)"
+		-e "MINIO_SECRET_KEY=$(read_backend_env_value MINIO_SECRET_KEY)"
+		-e "MINIO_BUCKET=$(read_backend_env_value MINIO_BUCKET)"
+		# Hanya credential path. FIREBASE_BUCKET sengaja TIDAK diteruskan:
+		# main.go memilih Firebase Storage bila Bucket terisi, dan itu akan
+		# memindahkan storage dari MinIO (lokasi data KTP/questionnaire/result)
+		# ke Firebase. Notifier hanya butuh credential path (main.go:108).
+		-e "FIREBASE_CREDENTIALS_PATH=${firebase_creds:-}"
+		-e "FIREBASE_BUCKET="
 	)
 
 	# Pastikan MinIO siap SEBELUM backend dibuat ulang.
@@ -298,12 +392,16 @@ apply_backend_env() {
 		--network "$network" \
 		--restart "$restart_policy" \
 		-p "$BACKEND_PORT:$BACKEND_PORT" \
+		"${mount_args[@]}" \
 		"${env_args[@]}" \
 		"$BACKEND_IMAGE" >/dev/null 2>&1; then
 		err "Gagal membuat ulang container $BACKEND_CONTAINER"
 		return 1
 	fi
 	ok "Container dibuat ulang (SMTP: ${SMTP_HOST:-belum diisi}, PayPal: ${PAYPAL_CLIENT_ID:+terkonfigurasi})"
+	if [ ${#mount_args[@]} -gt 0 ]; then
+		ok "Firebase credential di-mount read-only ke /app/credentials"
+	fi
 	return 0
 }
 
@@ -462,6 +560,9 @@ do_start() {
 		# Backend yang start saat MinIO belum siap akan memakai NoOp storage
 		# (upload file mati). Deteksi dan restart otomatis setelah MinIO siap.
 		ensure_backend_storage || return 1
+		# Image baru, credential Firebase, dan credential MinIO hanya berlaku
+		# kalau container di-recreate. Recreate otomatis saat tidak sinkron.
+		ensure_backend_config || return 1
 		wait_for_port "localhost" "$BACKEND_PORT" 40 2 || return 1
 	fi
 	echo ""
