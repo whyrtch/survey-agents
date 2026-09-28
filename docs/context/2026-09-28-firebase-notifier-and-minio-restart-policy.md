@@ -86,6 +86,45 @@ Env: `FIREBASE_CREDENTIALS_PATH=./credentials/firebase-adminsdk.json`,
 
 Restart kedua tidak merecreate container → `ensure_backend_firebase` idempoten.
 
+> ⚠️ **Catatan added 2026-09-28 setelah merge PR #1.** Baris di atas benar
+> secara literal tapi **tidak menguji apa pun**: pada iterasi pertama jalur
+> recreate tidak pernah dieksekusi, sehingga tidak ada yang diverifikasi.
+> Penyebabnya deteksi image drift membandingkan dua ID di namespace berbeda —
+> lihat "Jebakan deteksi image drift" di bawah. Diperbaiki di PR #2 dan diuji
+> ulang dengan jalur recreate yang benar-benar berjalan.
+
+---
+
+## Jebakan deteksi image drift (containerd image store)
+
+Mesin ini memakai **containerd image store** dan BuildKit menghasilkan
+**manifest list** (build output memuat `attestation manifest`). Akibatnya tag
+`latest` menunjuk ke *image index*, bukan config digest:
+
+```bash
+docker inspect <container> --format '{{.Image}}'   # → config digest  sha256:30828d43
+docker image inspect <tag>    --format '{{.Id}}'   # → image index    sha256:295fbc0c
+```
+
+Keduanya **tidak akan pernah sama**, meskipun menunjuk image yang sama pada
+build biasa. Versi pertama `backend_needs_recreate()` membandingkan kedua
+nilai itu, jadi selalu mengembalikan "tidak perlu recreate" dan image baru
+tidak pernah ter-deploy — gejala persis yang seharusnya dihilangkan.
+
+Perbaikan (PR #2): ambil kedua nilai lewat `docker inspect`, sehingga keduanya
+memakai mekanisme resolusi yang sama dengan `docker run`. `docker create`
+dipakai untuk me-resolve tag tanpa menjalankan container:
+
+```bash
+probe=$(docker create --name surveyku-image-probe "$BACKEND_IMAGE")
+tagged_image=$(docker inspect "$probe" --format '{{.Image}}')
+docker rm -f "$probe"
+```
+
+**Pelajaran:** jangan menyimpulkan "idempoten" dari `start` yang tidak
+menghasilkan recreate. Uji hanya bermakna kalau jalurnya sudah dieksekusi
+sesuai satu kali — pada bug ini, jalur itu justru tidak pernah jalan.
+
 ---
 
 ## Insiden 2 — MinIO tidak kembali setelah reboot

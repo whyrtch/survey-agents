@@ -154,7 +154,7 @@ Storage.
 Ini kemungkinan akar insiden "image stale" di
 `2026-09-17-order-complete-with-result.md`.
 
-`AGENTS.md` men instructs:
+`AGENTS.md` menulis:
 
 ```bash
 docker build -t surveyku-backend:latest .
