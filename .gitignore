@@ -3,3 +3,10 @@ surveyku-backend/
 surveyku-web/
 surveyor-app/
 surveyku-minio/
+
+# Cloud service-account credentials
+# berisi private key — jangan pernah di-commit
+service.json
+service-account*.json
+*firebase-adminsdk*.json
+credentials/
