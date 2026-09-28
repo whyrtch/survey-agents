@@ -128,10 +128,20 @@ backend_needs_recreate() {
 	# Image tag latest bisa lebih baru dari image yang sedang dipakai container.
 	# `docker start` tetap memakai image lama, jadi kode baru tidak akan aktif
 	# walau `docker build` sudah dijalankan.
-	local running_image current_image
+	#
+	# Perbandingan harus lewat config digest yang sama dengan yang dipakai
+	# `docker run`. `docker image inspect <tag> .Id` mengembalikan image index
+	# (BuildKit + containerd store), sedangkan `docker inspect <container>
+	# .Image` mengembalikan config digest — dua ID berbeda, tidak akan pernah
+	# sama. `docker create` ke-resolve tag lewat mekanisme yang sama dengan
+	# `docker run`, jadi hasilnya bisa dibandingkan langsung.
+	local running_image tagged_image probe
 	running_image=$(docker inspect "$BACKEND_CONTAINER" --format '{{.Image}}' 2>/dev/null || true)
-	current_image=$(docker image inspect "$BACKEND_IMAGE" --format '{{.Id}}' 2>/dev/null || true)
-	if [ -n "$current_image" ] && [ "$running_image" != "$current_image" ]; then
+	probe=$(docker create --name surveyku-image-probe "$BACKEND_IMAGE" 2>/dev/null) && {
+		tagged_image=$(docker inspect "$probe" --format '{{.Image}}' 2>/dev/null || true)
+		docker rm -f "$probe" >/dev/null 2>&1 || true
+	}
+	if [ -n "$tagged_image" ] && [ "$running_image" != "$tagged_image" ]; then
 		return 0
 	fi
 
