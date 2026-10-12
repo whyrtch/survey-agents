@@ -3,11 +3,12 @@
 #
 # Setup aktual:
 #   - PostgreSQL, Redis, MinIO, backend  -> container Docker
-#   - Web (Next.js)                      -> proses bare (setsid)
+#   - Web (Next.js)                      -> proses bare (setsid), production build
+#                                           (.next/standalone/server.js)
 #   - Cloudflared tunnel                 -> systemd user service
 #
 # Usage: ./surveyku-server.sh [action]
-#   start | stop | restart | status | fix-loops | setup-smtp | setup-paypal
+#   start | stop | restart | status | build-web | fix-loops | setup-smtp | setup-paypal
 #   default: start
 
 set -euo pipefail
@@ -23,6 +24,10 @@ CREDENTIALS_DIR="$BACKEND_DIR/credentials"
 WEB_DIR="$PROJECT_DIR/Survey/surveyku-web"
 WEB_PID_FILE="$WEB_DIR/.web.pid"
 WEB_LOG="$WEB_DIR/web.log"
+WEB_STANDALONE="$WEB_DIR/.next/standalone"
+WEB_API_URL="https://survey.whyrtch.online/api/v1"
+# systemd user service yang menjalankan web (~/.config/systemd/user/), lihat run_web().
+WEB_SERVICE="surveyku-web.service"
 SMTP_ENV_FILE="$PROJECT_DIR/.smtp.env"
 WEB_ENV_FILE="$PROJECT_DIR/.web.env"
 BACKEND_ENV_FILE="$PROJECT_DIR/.backend.env"
@@ -211,57 +216,127 @@ ensure_backend_config() {
 	fi
 }
 
-start_web() {
-	if pgrep -f "next dev" >/dev/null 2>&1; then
-		ok "Web sudah berjalan (PID: $(pgrep -f 'next dev' | head -1))"
-		return 0
-	fi
+# Web dideteksi lewat port, bukan `pgrep -f "next dev"`: pgrep -f ikut cocok
+# dengan proses apa pun yang command line-nya memuat teks itu (termasuk shell
+# yang menjalankan pgrep), sehingga status bisa "berjalan" padahal web mati.
+web_running() {
+	(echo > "/dev/tcp/localhost/$WEB_PORT") 2>/dev/null
+}
 
-	if [ ! -d "$WEB_DIR/node_modules" ]; then
-		echo "  📦 Install dependencies..."
-		( cd "$WEB_DIR" && npm install 2>&1 | tail -3 )
-	fi
+# PID proses yang listen di port web (kosong jika tidak ada).
+web_listen_pid() {
+	# `|| true`: grep gagal saat tidak ada yang listen; tanpa ini pipefail +
+	# set -e menghentikan seluruh script (mis. `stop` saat web sudah mati).
+	ss -ltnpH "sport = :$WEB_PORT" 2>/dev/null | grep -o 'pid=[0-9]*' | head -1 | cut -d= -f2 || true
+}
 
-	echo "  Menjalankan web (dev mode, port $WEB_PORT)..."
-	cd "$WEB_DIR"
-	export NEXT_PUBLIC_API_URL="https://survey.whyrtch.online/api/v1"
-	export PORT="$WEB_PORT"
-	# Load env tambahan untuk web (mis. PAYPAL_CLIENT_ID) dari .web.env jika ada
+# Env web: NEXT_PUBLIC_* di-inline saat build, sisanya (mis. PAYPAL_CLIENT_ID
+# untuk /api/public-config) dibaca saat runtime. Dipanggil di build dan start.
+load_web_env() {
+	export NEXT_PUBLIC_API_URL="$WEB_API_URL"
+	export NEXT_TELEMETRY_DISABLED=1
 	if [ -f "$WEB_ENV_FILE" ]; then
-		set -a # auto-export agar diwarisi child process (npm run dev)
+		set -a # auto-export agar diwarisi child process
 		# shellcheck disable=SC1090
 		source "$WEB_ENV_FILE"
 		set +a
 	fi
-	setsid nohup npm run dev > "$WEB_LOG" 2>&1 < /dev/null &
-	local pid=$!
-	echo "$pid" > "$WEB_PID_FILE"
-	disown "$pid" 2>/dev/null || true
+}
 
-	sleep 5
-	if kill -0 "$pid" 2>/dev/null; then
-		ok "Web berjalan (PID: $pid)"
-		wait_for_port "localhost" "$WEB_PORT" 40 2 || {
-			err "Web gagal bind port. Cek: tail -20 $WEB_LOG"
+# Build dianggap usang jika belum ada, atau ada sumber/konfigurasi yang lebih
+# baru dari build terakhir.
+web_build_stale() {
+	local stamp="$WEB_STANDALONE/server.js"
+	[ -f "$stamp" ] || return 0
+	[ -d "$WEB_STANDALONE/.next/static" ] || return 0
+	[ -n "$(find "$WEB_DIR/src" "$WEB_DIR/public" "$WEB_DIR/package.json" \
+		"$WEB_DIR/package-lock.json" "$WEB_DIR/next.config.ts" "$WEB_DIR/.env" \
+		"$WEB_ENV_FILE" -newer "$stamp" -print -quit 2>/dev/null)" ]
+}
+
+# Production build. Dev mode (`next dev`) tidak dipakai lagi: compile on-demand
+# Turbopack dari HDD sempat memunculkan ratusan worker postcss dan menghabiskan
+# RAM + swap (2026-10-12).
+build_web() {
+	echo "  🔨 Build production (next build), log: $WEB_LOG"
+	if ! ( cd "$WEB_DIR" && load_web_env && NODE_ENV=production nice -n 10 npm run build ) > "$WEB_LOG" 2>&1; then
+		err "Build gagal. Cek: tail -40 $WEB_LOG"
+		return 1
+	fi
+	# output: "standalone" tidak menyertakan public/ dan .next/static/; salin
+	# manual supaya server.js ikut menyajikannya (sama seperti Dockerfile).
+	rm -rf "$WEB_STANDALONE/.next/static" "$WEB_STANDALONE/public"
+	cp -r "$WEB_DIR/.next/static" "$WEB_STANDALONE/.next/static"
+	[ -d "$WEB_DIR/public" ] && cp -r "$WEB_DIR/public" "$WEB_STANDALONE/public"
+	ok "Build selesai"
+}
+
+web_service_installed() {
+	systemctl --user cat "$WEB_SERVICE" &>/dev/null
+}
+
+# Jalankan web di foreground: build dulu kalau usang, lalu exec server.js.
+# Dipakai ExecStart surveyku-web.service (systemd user, otomatis jalan saat
+# boot) dan fallback proses bare kalau service belum terpasang.
+run_web() {
+	if [ ! -d "$WEB_DIR/node_modules" ]; then
+		echo "  📦 Install dependencies..."
+		( cd "$WEB_DIR" && npm install 2>&1 | tail -3 )
+	fi
+	if web_build_stale; then
+		build_web || exit 1
+	fi
+	cd "$WEB_STANDALONE"
+	load_web_env
+	export NODE_ENV=production PORT="$WEB_PORT" HOSTNAME=0.0.0.0
+	exec node server.js
+}
+
+start_web() {
+	if web_running; then
+		ok "Web sudah berjalan (PID: $(web_listen_pid))"
+		return 0
+	fi
+
+	if web_build_stale; then
+		echo "  Ada perubahan sejak build terakhir, web akan di-build ulang (~1-2 menit)..."
+	fi
+	if web_service_installed; then
+		echo "  Menjalankan $WEB_SERVICE (production, port $WEB_PORT)..."
+		systemctl --user start "$WEB_SERVICE" || {
+			err "Gagal start $WEB_SERVICE. Cek: systemctl --user status $WEB_SERVICE"
 			return 1
 		}
 	else
-		err "Web process crash. Cek: tail -20 $WEB_LOG"
-		return 1
+		echo "  $WEB_SERVICE belum terpasang, menjalankan web sebagai proses bare..."
+		( exec setsid nohup bash "$SCRIPT_REPO" run-web >> "$WEB_LOG" 2>&1 < /dev/null ) &
+		disown $! 2>/dev/null || true
 	fi
+
+	wait_for_port "localhost" "$WEB_PORT" 120 2 || {
+		err "Web gagal start. Cek: tail -40 $WEB_LOG"
+		return 1
+	}
+	ok "Web berjalan (PID: $(web_listen_pid))"
 }
 
 stop_web() {
-	local pids
-	pids=$(pgrep -f "next dev" 2>/dev/null || true)
-	if [ -n "$pids" ]; then
-		for p in $pids; do
-			kill "$p" 2>/dev/null || true
+	if web_service_installed && systemctl --user is-active --quiet "$WEB_SERVICE"; then
+		systemctl --user stop "$WEB_SERVICE" && ok "Web stopped ($WEB_SERVICE)"
+	fi
+	# Proses web di luar systemd (fallback proses bare / sisa versi lama).
+	local pid
+	pid=$(web_listen_pid)
+	if [ -z "$pid" ] && [ -f "$WEB_PID_FILE" ]; then
+		pid=$(cat "$WEB_PID_FILE")
+	fi
+	if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+		kill "$pid" 2>/dev/null || true
+		for _ in $(seq 1 10); do
+			kill -0 "$pid" 2>/dev/null || break
+			sleep 1
 		done
-		sleep 2
-		for p in $pids; do
-			kill -0 "$p" 2>/dev/null && kill -9 "$p" 2>/dev/null || true
-		done
+		kill -0 "$pid" 2>/dev/null && kill -9 "$pid" 2>/dev/null || true
 		ok "Web stopped"
 	fi
 	rm -f "$WEB_PID_FILE"
@@ -694,10 +769,16 @@ do_status() {
 	echo ""
 
 	log "Web (port $WEB_PORT)"
-	if [ -f "$WEB_PID_FILE" ] && kill -0 "$(cat "$WEB_PID_FILE")" 2>/dev/null; then
-		ok "Web berjalan (PID: $(cat "$WEB_PID_FILE"))"
-	elif pgrep -f "next dev" >/dev/null 2>&1; then
-		ok "Web berjalan (PID: $(pgrep -f 'next dev' | head -1))"
+	if web_running; then
+		ok "Web berjalan (PID: $(web_listen_pid))"
+		if web_service_installed; then
+			ok "$WEB_SERVICE: $(systemctl --user is-active "$WEB_SERVICE"), $(systemctl --user is-enabled "$WEB_SERVICE") saat boot"
+		else
+			err "$WEB_SERVICE belum terpasang (web tidak otomatis jalan setelah reboot)"
+		fi
+		if web_build_stale; then
+			err "Ada perubahan kode setelah build terakhir (jalankan: ./surveyku-server.sh build-web)"
+		fi
 	else
 		err "Web tidak berjalan"
 	fi
@@ -760,6 +841,15 @@ case "${1:-start}" in
 	status)
 		do_status
 		;;
+	build-web)
+		# Paksa build ulang lalu restart web (deploy perubahan web).
+		stop_web
+		build_web && start_web
+		;;
+	run-web)
+		# Internal: ExecStart surveyku-web.service (foreground).
+		run_web
+		;;
 	fix-loops)
 		do_fix_loops
 		;;
@@ -770,7 +860,7 @@ case "${1:-start}" in
 		do_setup_paypal
 		;;
 	*)
-		echo "Usage: $0 {start|stop|restart|status|fix-loops|setup-smtp|setup-paypal}"
+		echo "Usage: $0 {start|stop|restart|status|build-web|fix-loops|setup-smtp|setup-paypal}"
 		exit 1
 		;;
 esac

@@ -454,7 +454,7 @@ Script utama: **`/home/whyrtch/surveyku-server.sh`**
 | Redis | Container | `surveyku-redis` | 6379 |
 | MinIO | Container | `surveyku-minio` | 9000 (API), 9001 (console) |
 | Backend | Container | `surveyku-backend` | 8080 |
-| Web (Next.js) | Proses bare (`setsid`) | — | 3000 |
+| Web (Next.js) | systemd user `surveyku-web.service`, production build (`.next/standalone/server.js`) | — | 3000 |
 | Tunnel | Cloudflared (systemd user) | — | `survey.whyrtch.online` (backend), `admin-survey.whyrtch.online` (web) |
 
 > MinIO data: `/home/whyrtch/Project/Survey/surveyku-minio` (bind mount ke
@@ -546,7 +546,10 @@ npm run update:all           # EAS Update OTA
 | Upload file gagal `INTERNAL_ERROR` | Backend memakai NoOp storage (MinIO belum siap saat start) | `./surveyku-server.sh restart` |
 | Order COMPLETED tapi client lihat "Hasil sedang disiapkan" | `result_file_url` NULL (order selesai tanpa file) | Admin klik **"Generate Hasil Akhir"** (self-heal) |
 | Backend tidak punya endpoint baru | Image stale (dibangun dari commit lama) | Rebuild dari commit final + restart |
-| Web tidak jalan | Proses `next dev` mati | `./surveyku-server.sh start` atau cek `tail -f surveyku-web/web.log` |
+| Web tidak jalan | Proses web (`server.js`) mati atau build gagal | `./surveyku-server.sh start` atau cek `tail -f surveyku-web/web.log` |
+| Perubahan web tidak muncul | Web masih memakai build lama | `./surveyku-server.sh build-web` |
+| Web tidak jalan setelah reboot | `surveyku-web.service` gagal/nonaktif | `systemctl --user status surveyku-web`; aktifkan: `systemctl --user enable --now surveyku-web` |
+| RAM/swap habis, ratusan proses `postcss.js` | `next dev` dijalankan di server | Hentikan, pakai production build (`./surveyku-server.sh start`) |
 | Service restart loop (cloudflared) | Token tunnel hilang | `sudo ./surveyku-server.sh fix-loops` |
 | Test backend gagal | `fakeOrderRepo` menyimpan pointer (mutasi bocor) | Gunakan `cloneOrder` (lihat test) |
 
@@ -564,8 +567,9 @@ npm run update:all           # EAS Update OTA
    `/DATA/AppData/immich/pgdata`). MinIO sudah di dalam folder
    (`surveyku-minio/`). Jangan buat folder data baru di `Project/Survey/`
    selain yang sudah ada.
-7. **Frontend `next dev` berjalan dari `Survey/surveyku-web`** — jika folder
-   dipindah lagi, update `surveyku-server.sh` dan restart web.
+7. **Web server berjalan dari production build di `Survey/surveyku-web/.next/standalone`**
+   — jangan pakai `next dev` di server. Jika folder dipindah lagi, update
+   `surveyku-server.sh` lalu `./surveyku-server.sh build-web`.
 8. **Mobile: jangan bypass orchestration hooks** — screens tidak boleh
    memanggil store/service langsung (pola `features/*/hooks`).
 9. **Mobile: `EXPO_PUBLIC_FIREBASE_PROJECT_ID` kosong = mock mode** — jangan

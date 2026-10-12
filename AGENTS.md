@@ -63,13 +63,13 @@ mobile, dapat reward), **admin** (back-office: verifikasi, audit, payout).
 | Redis | Container | `surveyku-redis` | 6379 |
 | MinIO | Container | `surveyku-minio` | 9000 (API), 9001 (console) |
 | Backend | Container | `surveyku-backend` | 8080 |
-| Web (Next.js) | Proses bare (`setsid`) | — | 3000 |
+| Web (Next.js) | systemd user `surveyku-web.service`, production build (`.next/standalone/server.js`) | — | 3000 |
 | Tunnel | Cloudflared (systemd user) | — | `survey.whyrtch.online` (backend), `admin-survey.whyrtch.online` (web) |
 
 ### Script utama
 
 ```bash
-/home/whyrtch/surveyku-server.sh {start|stop|restart|status|fix-loops|setup-smtp|setup-paypal}
+/home/whyrtch/surveyku-server.sh {start|stop|restart|status|build-web|fix-loops|setup-smtp|setup-paypal}
 ```
 
 > Jalur di atas **symlink** ke `Survey/surveyku-server.sh`. Edit script di
@@ -80,7 +80,8 @@ mobile, dapat reward), **admin** (back-office: verifikasi, audit, payout).
 - `start` — nyalakan semua service (PostgreSQL → Redis → MinIO → Backend → Web → Tunnel) + verifikasi endpoint
 - `stop` — matikan Web, Backend, MinIO, Redis (PostgreSQL & Tunnel dibiarkan jalan)
 - `restart` — stop lalu start
-- `status` — cek semua komponen + deteksi NoOp storage + restart loop
+- `status` — cek semua komponen + deteksi NoOp storage + restart loop + build web usang
+- `build-web` — build ulang web (production) lalu restart web
 - `setup-smtp` / `setup-paypal` — isi konfigurasi lalu recreate container backend
 
 ### Deploy perubahan backend (Go)
@@ -104,11 +105,25 @@ curl http://localhost:8080/api/v1/health
 ### Deploy perubahan web (Next.js)
 
 ```bash
-cd /home/whyrtch/Project/Survey/surveyku-web
-# Web jalan sebagai proses bare (dev mode), bukan container
-/home/whyrtch/surveyku-server.sh restart   # atau start_web via script
-tail -f web.log                            # cek log
+# Web jalan sebagai proses bare dari production build (bukan dev mode, bukan container)
+/home/whyrtch/surveyku-server.sh build-web   # next build + restart web
+tail -f /home/whyrtch/Project/Survey/surveyku-web/web.log
 ```
+
+> `start` otomatis build ulang kalau ada file di `src/`, `public/`,
+> `package*.json`, `next.config.ts`, `.env`, atau `.web.env` yang lebih baru
+> dari build terakhir. `NEXT_PUBLIC_*` di-inline saat build, jadi perubahan
+> env itu butuh build ulang.
+>
+> Web dijalankan oleh systemd user service `surveyku-web.service`
+> (`~/.config/systemd/user/`): otomatis jalan saat boot, restart sendiri
+> kalau crash, dan dibatasi memori 3 GB. `start`/`stop` script memanggil
+> `systemctl --user` untuk service ini. Log tetap di `surveyku-web/web.log`;
+> status service: `systemctl --user status surveyku-web`.
+>
+> ⚠️ **Jangan jalankan `next dev` di server** (insiden 2026-10-12): compile
+> on-demand Turbopack dari HDD memunculkan ratusan worker postcss dan
+> menghabiskan RAM + swap. Dev mode hanya untuk mesin pengembangan.
 
 ### Env files (rahasia, jangan di-commit)
 
