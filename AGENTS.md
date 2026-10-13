@@ -59,7 +59,7 @@ mobile, dapat reward), **admin** (back-office: verifikasi, audit, payout).
 
 | Komponen | Jenis | Nama | Port |
 |---|---|---|---|
-| PostgreSQL | Container | `immich-postgres` | 5432 (internal) |
+| PostgreSQL | Container | `surveyku-postgres` (`postgres:17-alpine`, volume `surveyku-pgdata`) | 5432 (internal, network `surveyku`) |
 | Redis | Container | `surveyku-redis` | 6379 |
 | MinIO | Container | `surveyku-minio` | 9000 (API), 9001 (console) |
 | Backend | Container | `surveyku-backend` | 8080 |

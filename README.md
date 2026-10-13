@@ -24,8 +24,9 @@ payout, dll).
 ```
 
 **PENTING — jangan tertukar:**
-- Database aktif memakai container `immich-postgres` (dipakai bersama aplikasi
-  Immich), mount `/DATA/AppData/immich/pgdata`.
+- Database aktif memakai container `surveyku-postgres` (khusus SurveyKu,
+  volume Docker `surveyku-pgdata`). Sejak 2026-10-13 **tidak lagi** menumpang
+  di `immich-postgres`.
 - MinIO aktif me-mount `/home/whyrtch/Project/Survey/surveyku-minio` (container
   `surveyku-minio`, port 9000/9001).
 
@@ -359,7 +360,8 @@ Detail lengkap: `surveyku-backend/docs/business-flow/order-completion-flow.md`.
 
 ## 🗄️ Data Model
 
-Database aktif: container `immich-postgres`, DB `surveyku`, user `hermes`.
+Database aktif: container `surveyku-postgres`, DB `surveyku`, user `hermes`
+(pemilik database, bukan superuser).
 Schema: `surveyku-backend/migrations/`.
 
 ### Tabel Utama
@@ -450,7 +452,7 @@ Script utama: **`/home/whyrtch/surveyku-server.sh`**
 
 | Komponen | Jenis | Nama | Port |
 |---|---|---|---|
-| PostgreSQL | Container | `immich-postgres` | 5432 (internal) |
+| PostgreSQL | Container | `surveyku-postgres` (`postgres:17-alpine`, volume `surveyku-pgdata`) | 5432 (internal, network `surveyku`) |
 | Redis | Container | `surveyku-redis` | 6379 |
 | MinIO | Container | `surveyku-minio` | 9000 (API), 9001 (console) |
 | Backend | Container | `surveyku-backend` | 8080 |
@@ -458,8 +460,9 @@ Script utama: **`/home/whyrtch/surveyku-server.sh`**
 | Tunnel | Cloudflared (systemd user) | — | `survey.whyrtch.online` (backend), `admin-survey.whyrtch.online` (web) |
 
 > MinIO data: `/home/whyrtch/Project/Survey/surveyku-minio` (bind mount ke
-> `/data`). Container ada di network `bridge` + `immich_immich` — backend
-> mengakses via nama container `surveyku-minio:9000`.
+> `/data`). Semua container SurveyKu ada di network `surveyku` — backend
+> mengakses via nama container `surveyku-minio:9000`, `surveyku-redis`, dan
+> `surveyku-postgres`.
 
 ### Rebuild Backend
 
@@ -563,8 +566,8 @@ npm run update:all           # EAS Update OTA
 3. **Jangan panggil repo langsung dari handler** — lewat service layer.
 4. **Jangan menambah upload UI** — hasil akhir selalu di-generate backend.
 5. **Jangan commit tanpa update docs** — business-flow, context, tasks.
-6. **DB aktif di luar folder Survey** — DB di `immich-postgres` (mount
-   `/DATA/AppData/immich/pgdata`). MinIO sudah di dalam folder
+6. **DB aktif di luar folder Survey** — DB di `surveyku-postgres` (volume
+   Docker `surveyku-pgdata`, di SSD). MinIO sudah di dalam folder
    (`surveyku-minio/`). Jangan buat folder data baru di `Project/Survey/`
    selain yang sudah ada.
 7. **Web server berjalan dari production build di `Survey/surveyku-web/.next/standalone`**

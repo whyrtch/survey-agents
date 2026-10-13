@@ -2,7 +2,7 @@
 # SurveyKu Server Manager (container-based)
 #
 # Setup aktual:
-#   - PostgreSQL, Redis, MinIO, backend  -> container Docker
+#   - PostgreSQL, Redis, MinIO, backend  -> container Docker (network "surveyku")
 #   - Web (Next.js)                      -> proses bare (setsid), production build
 #                                           (.next/standalone/server.js)
 #   - Cloudflared tunnel                 -> systemd user service
@@ -32,7 +32,13 @@ SMTP_ENV_FILE="$PROJECT_DIR/.smtp.env"
 WEB_ENV_FILE="$PROJECT_DIR/.web.env"
 BACKEND_ENV_FILE="$PROJECT_DIR/.backend.env"
 
-POSTGRES_CONTAINER="immich-postgres"
+# Database SurveyKu punya container sendiri (dulu menumpang di immich-postgres,
+# lihat docs/context/2026-10-13-separate-surveyku-db.md). Semua container
+# SurveyKu bicara lewat network $SURVEYKU_NETWORK, tidak lagi lewat network Immich.
+POSTGRES_CONTAINER="surveyku-postgres"
+POSTGRES_IMAGE="postgres:17-alpine"
+POSTGRES_VOLUME="surveyku-pgdata"
+SURVEYKU_NETWORK="surveyku"
 REDIS_CONTAINER="surveyku-redis"
 MINIO_CONTAINER="surveyku-minio"
 BACKEND_CONTAINER="surveyku-backend"
@@ -121,6 +127,85 @@ ensure_container() {
 	fi
 }
 
+# Network bersama container SurveyKu. Redis dan MinIO dibuat di luar script
+# (MinIO lewat surveyku-backend/docker-compose.yml), jadi disambungkan di sini
+# kalau belum. Alias "minio" dipertahankan seperti di network lama.
+ensure_network() {
+	if ! docker network inspect "$SURVEYKU_NETWORK" >/dev/null 2>&1; then
+		docker network create "$SURVEYKU_NETWORK" >/dev/null || {
+			err "Gagal membuat network $SURVEYKU_NETWORK"
+			return 1
+		}
+		ok "Network $SURVEYKU_NETWORK dibuat"
+	fi
+	local name networks
+	for name in "$REDIS_CONTAINER" "$MINIO_CONTAINER"; do
+		container_exists "$name" || continue
+		networks=$(docker inspect "$name" --format '{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{end}}')
+		case " $networks " in
+			*" $SURVEYKU_NETWORK "*) continue ;;
+		esac
+		if [ "$name" = "$MINIO_CONTAINER" ]; then
+			docker network connect --alias minio "$SURVEYKU_NETWORK" "$name"
+		else
+			docker network connect "$SURVEYKU_NETWORK" "$name"
+		fi && ok "$name disambungkan ke network $SURVEYKU_NETWORK" || {
+			err "Gagal menyambungkan $name ke network $SURVEYKU_NETWORK"
+			return 1
+		}
+	done
+}
+
+# Buat container PostgreSQL SurveyKu kalau belum ada. Superuser "postgres"
+# memakai password acak yang tidak disimpan (akses admin lewat `docker exec`,
+# autentikasi lokal di dalam container). Backend login sebagai DB_USER yang
+# hanya pemilik database DB_NAME, bukan superuser.
+#
+# Container baru berisi database KOSONG. Data lama tidak dipindah otomatis;
+# lihat docs/context/2026-10-13-separate-surveyku-db.md untuk restore.
+ensure_postgres() {
+	if container_exists "$POSTGRES_CONTAINER"; then
+		ensure_container "$POSTGRES_CONTAINER"
+		return
+	fi
+	local db_user db_name db_password
+	db_user=$(read_backend_env_value DB_USER)
+	db_name=$(read_backend_env_value DB_NAME)
+	db_password=$(read_backend_env_value DB_PASSWORD)
+	if [ -z "$db_user" ] || [ -z "$db_name" ] || [ -z "$db_password" ]; then
+		err "DB_USER/DB_NAME/DB_PASSWORD belum ada di $BACKEND_DIR/.env"
+		return 1
+	fi
+	echo "  Membuat container $POSTGRES_CONTAINER ($POSTGRES_IMAGE)..."
+	if ! docker run -d --name "$POSTGRES_CONTAINER" \
+		--network "$SURVEYKU_NETWORK" \
+		--restart unless-stopped \
+		-e POSTGRES_PASSWORD="$(head -c 32 /dev/urandom | base64 | tr -dc 'A-Za-z0-9')" \
+		-v "$POSTGRES_VOLUME:/var/lib/postgresql/data" \
+		"$POSTGRES_IMAGE" >/dev/null; then
+		err "Gagal membuat container $POSTGRES_CONTAINER"
+		return 1
+	fi
+	local i
+	for i in $(seq 1 30); do
+		# Entrypoint menjalankan server sementara saat init; tunggu server final.
+		docker exec "$POSTGRES_CONTAINER" pg_isready -U postgres -h 127.0.0.1 >/dev/null 2>&1 && break
+		sleep 2
+	done
+	# Password lewat stdin (variabel psql), bukan argumen perintah.
+	if ! docker exec -i "$POSTGRES_CONTAINER" psql -U postgres -v ON_ERROR_STOP=1 -q \
+		-v user="$db_user" -v db="$db_name" >/dev/null <<-EOF
+		\set password '$(printf '%s' "$db_password" | sed -e 's/\\/\\\\/g' -e "s/'/''/g")'
+		CREATE ROLE :"user" LOGIN PASSWORD :'password';
+		CREATE DATABASE :"db" OWNER :"user";
+		EOF
+	then
+		err "Gagal membuat role/database di $POSTGRES_CONTAINER"
+		return 1
+	fi
+	ok "$POSTGRES_CONTAINER dibuat (database $db_name kosong, pemilik $db_user)"
+}
+
 # Deteksi apakah startup backend terakhir memakai NoOp storage (MinIO tidak
 # terjangkau saat proses backend start). Dalam kondisi ini upload file mati
 # sampai backend di-restart, jadi script akan restart otomatis setelah MinIO
@@ -153,6 +238,11 @@ ensure_backend_storage() {
 # di-build tidak akan pernah benar-benar dipakai.
 backend_needs_recreate() {
 	container_running "$BACKEND_CONTAINER" || return 1
+
+	# Backend lama berjalan di network Immich dengan DB_HOST=immich-postgres.
+	# Network dan env hanya bisa diganti lewat recreate.
+	[ "$(docker inspect "$BACKEND_CONTAINER" --format '{{.HostConfig.NetworkMode}}' 2>/dev/null)" = "$SURVEYKU_NETWORK" ] || return 0
+	[ "$(docker exec "$BACKEND_CONTAINER" printenv DB_HOST 2>/dev/null || true)" = "$POSTGRES_CONTAINER" ] || return 0
 
 	# Image tag latest bisa lebih baru dari image yang sedang dipakai container.
 	# `docker start` tetap memakai image lama, jadi kode baru tidak akan aktif
@@ -426,8 +516,8 @@ apply_backend_env() {
 	fi
 	load_backend_env
 
-	local network restart_policy
-	network=$(docker inspect "$BACKEND_CONTAINER" --format '{{.HostConfig.NetworkMode}}' 2>/dev/null)
+	ensure_network || return 1
+	local restart_policy
 	restart_policy=$(docker inspect "$BACKEND_CONTAINER" --format '{{.HostConfig.RestartPolicy.Name}}' 2>/dev/null)
 	[ -z "$restart_policy" ] && restart_policy="unless-stopped"
 
@@ -443,17 +533,18 @@ apply_backend_env() {
 		err "FIREBASE_CREDENTIALS_PATH diset tapi $CREDENTIALS_DIR tidak ada — notifikasi Firestore nonaktif"
 	fi
 
-	# Kumpulkan env lama (kecuali SMTP_* / VERIFY_URL / PAYPAL_* / MINIO_*) + env baru
+	# Kumpulkan env lama (kecuali SMTP_* / VERIFY_URL / PAYPAL_* / MINIO_* / DB_HOST) + env baru
 	local env_args=()
 	while IFS= read -r line; do
 		[ -z "$line" ] && continue
 		case "$line" in
-			SMTP_*|VERIFY_URL=*|ADMIN_NOTIFY_EMAILS=*|ADMIN_URL=*|MIN_SURVEYORS_TO_COMPLETE=*|PAYPAL_*|MINIO_*) continue ;;
+			SMTP_*|VERIFY_URL=*|ADMIN_NOTIFY_EMAILS=*|ADMIN_URL=*|MIN_SURVEYORS_TO_COMPLETE=*|PAYPAL_*|MINIO_*|DB_HOST=*) continue ;;
 		esac
 		env_args+=(-e "$line")
 	done < <(docker inspect "$BACKEND_CONTAINER" --format '{{range .Config.Env}}{{println .}}{{end}}' 2>/dev/null)
 
 	env_args+=(
+		-e "DB_HOST=$POSTGRES_CONTAINER"
 		-e "SMTP_HOST=${SMTP_HOST:-}"
 		-e "SMTP_PORT=${SMTP_PORT:-587}"
 		-e "SMTP_USER=${SMTP_USER:-}"
@@ -504,7 +595,7 @@ apply_backend_env() {
 
 	echo "  Membuat ulang container backend..."
 	if ! docker run -d --name "$BACKEND_CONTAINER" \
-		--network "$network" \
+		--network "$SURVEYKU_NETWORK" \
 		--restart "$restart_policy" \
 		-p "$BACKEND_PORT:$BACKEND_PORT" \
 		"${mount_args[@]}" \
@@ -643,7 +734,8 @@ do_start() {
 	ok "Docker daemon aktif"
 
 	log "1. PostgreSQL ($POSTGRES_CONTAINER)"
-	ensure_container "$POSTGRES_CONTAINER" || return 1
+	ensure_network || return 1
+	ensure_postgres || return 1
 	if container_running "$POSTGRES_CONTAINER"; then
 		echo "  Menunggu PostgreSQL siap..."
 		local pg_ready=0
@@ -717,14 +809,12 @@ do_start() {
 do_stop() {
 	log "🛑 Mematikan SurveyKu Server..."
 	stop_web
-	for name in "$BACKEND_CONTAINER" "$MINIO_CONTAINER" "$REDIS_CONTAINER"; do
+	for name in "$BACKEND_CONTAINER" "$MINIO_CONTAINER" "$REDIS_CONTAINER" "$POSTGRES_CONTAINER"; do
 		if container_running "$name"; then
 			docker stop "$name" >/dev/null 2>&1 && ok "$name stopped"
 		fi
 	done
-	# PostgreSQL dibiarkan jalan (dipakai bersama immich)
 	echo ""
-	log "PostgreSQL ($POSTGRES_CONTAINER) dibiarkan jalan."
 	log "Cloudflared user service dibiarkan jalan."
 	echo ""
 	log "Semua service SurveyKu dihentikan."
