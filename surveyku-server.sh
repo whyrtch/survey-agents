@@ -284,11 +284,11 @@ backend_needs_recreate() {
 		[ -z "$bucket" ] || return 0
 	fi
 
-	# Kredensial MinIO harus ikut berubah kalau .env sudah dirotasi. Kalau
+	# Kredensial MinIO (dan key kirimwa) harus ikut berubah kalau .env sudah dirotasi. Kalau
 	# tidak, backend tetap menandatangani request dengan key lama dan semua
 	# upload gagal dengan SignatureDoesNotMatch.
 	local expected_actual
-	for key in MINIO_ACCESS_KEY MINIO_SECRET_KEY; do
+	for key in MINIO_ACCESS_KEY MINIO_SECRET_KEY KIRIMWA_API_KEY; do
 		expected_actual=$(read_backend_env_value "$key")
 		[ -n "$expected_actual" ] || continue
 		[ "$(docker exec "$BACKEND_CONTAINER" printenv "$key" 2>/dev/null || true)" = "$expected_actual" ] || return 0
@@ -533,12 +533,13 @@ apply_backend_env() {
 		err "FIREBASE_CREDENTIALS_PATH diset tapi $CREDENTIALS_DIR tidak ada — notifikasi Firestore nonaktif"
 	fi
 
-	# Kumpulkan env lama (kecuali SMTP_* / VERIFY_URL / PAYPAL_* / MINIO_* / DB_HOST) + env baru
+	# Kumpulkan env lama (kecuali SMTP_* / VERIFY_URL / PAYPAL_* / MINIO_* / KIRIMWA_* / DB_HOST) + env baru.
+	# FONNTE_* ikut dibuang: provider OTP lama, sudah diganti kirimwa.
 	local env_args=()
 	while IFS= read -r line; do
 		[ -z "$line" ] && continue
 		case "$line" in
-			SMTP_*|VERIFY_URL=*|ADMIN_NOTIFY_EMAILS=*|ADMIN_URL=*|MIN_SURVEYORS_TO_COMPLETE=*|PAYPAL_*|MINIO_*|DB_HOST=*) continue ;;
+			SMTP_*|VERIFY_URL=*|ADMIN_NOTIFY_EMAILS=*|ADMIN_URL=*|MIN_SURVEYORS_TO_COMPLETE=*|PAYPAL_*|MINIO_*|KIRIMWA_*|FONNTE_*|DB_HOST=*) continue ;;
 		esac
 		env_args+=(-e "$line")
 	done < <(docker inspect "$BACKEND_CONTAINER" --format '{{range .Config.Env}}{{println .}}{{end}}' 2>/dev/null)
@@ -567,6 +568,10 @@ apply_backend_env() {
 		-e "MINIO_ACCESS_KEY=$(read_backend_env_value MINIO_ACCESS_KEY)"
 		-e "MINIO_SECRET_KEY=$(read_backend_env_value MINIO_SECRET_KEY)"
 		-e "MINIO_BUCKET=$(read_backend_env_value MINIO_BUCKET)"
+		# OTP WhatsApp lewat kirimwa.cloud. Kalau key kosong, backend tidak
+		# mengirim OTP dan menerima magic code 123456 (APP_ENV bukan production).
+		-e "KIRIMWA_API_KEY=$(read_backend_env_value KIRIMWA_API_KEY)"
+		-e "KIRIMWA_BASE_URL=$(read_backend_env_value KIRIMWA_BASE_URL)"
 		# Nilai default ini harus sama dengan default internal/config/config.go.
 		# Kalau tidak, backend memakai default localhost yang tidak bisa dibuka
 		# penerima email.
